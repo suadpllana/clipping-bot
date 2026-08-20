@@ -23,7 +23,8 @@ def _fmt(t: float) -> str:
     return f"{int(t // 60)}:{t % 60:04.1f}"
 
 
-def main(argv: list[str] | None = None) -> int:
+def edit_cmd(argv: list[str] | None = None) -> int:
+    """The original single-edit command. Behaviour unchanged."""
     ap = argparse.ArgumentParser(
         prog="clipbot",
         description="Turn movies or scenepacks into beat-synced vertical edits.",
@@ -147,6 +148,137 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if not args.keep_temp:
             shutil.rmtree(work, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# subcommands
+# --------------------------------------------------------------------------
+
+def ui_cmd(argv: list[str]) -> int:
+    """Launch the web UI."""
+    ap = argparse.ArgumentParser(prog="clipbot ui",
+                                 description="Serve the clipbot web UI.")
+    ap.add_argument("-p", "--port", type=int, default=8000)
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="Bind address. Leave as-is unless you mean to expose "
+                         "the UI on your network — it has no authentication.")
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="Concurrent jobs. Renders are memory-hungry; 1 is "
+                         "deliberate.")
+    args = ap.parse_args(argv)
+
+    import os
+    os.environ["CLIPBOT_WORKERS"] = str(max(args.workers, 1))
+    try:
+        from .server import serve
+    except ImportError as e:
+        print(f"error: the web UI needs fastapi and uvicorn:\n"
+              f"  pip install -r requirements.txt\n  ({e})", file=sys.stderr)
+        return 2
+    serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def clips_cmd(argv: list[str]) -> int:
+    """Cut a long source into N ready-to-post clips."""
+    from .pipeline import Settings, run_pipeline
+
+    ap = argparse.ArgumentParser(
+        prog="clipbot clips",
+        description="Cut a movie or episode into N ready-to-post clips.")
+    ap.add_argument("video", type=Path)
+    ap.add_argument("-n", "--count", type=int, default=5)
+    ap.add_argument("-s", "--secs", type=float, default=30.0,
+                    help="Length of each clip in seconds.")
+    ap.add_argument("-o", "--out", type=Path, default=Path("clips"),
+                    help="Output directory.")
+    ap.add_argument("--music", type=Path, default=None,
+                    help="Supply a track to make beat-synced montages instead "
+                         "of straight highlight cuts.")
+    ap.add_argument("--aspect", default="9:16",
+                    choices=["9:16", "4:5", "1:1", "16:9"])
+    ap.add_argument("--quality", default="high",
+                    choices=["max", "high", "balanced", "small"])
+    ap.add_argument("--skip-intro", type=float, default=0.0)
+    ap.add_argument("--skip-outro", type=float, default=0.0)
+    ap.add_argument("--no-sharpen", action="store_true")
+    ap.add_argument("--no-normalize", action="store_true")
+    ap.add_argument("--seed", type=int, default=int(time.time()) % 100000)
+    args = ap.parse_args(argv)
+
+    settings = Settings(
+        video=args.video, out_dir=args.out, count=args.count, length=args.secs,
+        mode="music" if args.music else "highlight", audio=args.music,
+        aspect=args.aspect, quality=args.quality,
+        skip_intro=args.skip_intro, skip_outro=args.skip_outro,
+        sharpen=not args.no_sharpen, normalize_audio=not args.no_normalize,
+        seed=args.seed,
+    )
+
+    tty = sys.stdout.isatty()
+    last = [""]
+
+    def report(stage: str, frac: float, message: str) -> None:
+        line = f"  [{int(frac * 100):3d}%] {message}"
+        if tty:
+            print(f"\r{line:<74}", end="", flush=True)
+        elif message != last[0]:
+            print(line, flush=True)
+        last[0] = message
+
+    try:
+        results = run_pipeline(settings, report)
+    except ValueError as e:
+        if tty:
+            print()
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        if tty:
+            print()
+        print("interrupted", file=sys.stderr)
+        return 130
+
+    if tty:
+        print()
+    print()
+    for c in results:
+        print(f"  {c.index:2d}. {_fmt(c.start)} → {_fmt(c.end)}  "
+              f"{c.duration:5.1f}s  {c.size / 1e6:6.1f} MB  "
+              f"{','.join(c.tags)}")
+    print(f"\n✓ {len(results)} clips in {args.out.resolve()}")
+    return 0
+
+
+_USAGE = """clipbot — clips out of movies and episodes
+
+  clipbot ui                            open the web UI (upload, tweak, download)
+  clipbot clips VIDEO -n 8 -s 30        cut 8 clips of 30s each
+  clipbot clips VIDEO --music SONG.mp3  beat-synced montages instead
+  clipbot VIDEO SONG.mp3 -d 30          the original single beat-synced edit
+
+Add -h after any subcommand for its options."""
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(_USAGE)
+        return 0
+    if argv[0] in ("-V", "--version"):
+        from . import __version__
+        print(f"clipbot {__version__}")
+        return 0
+
+    cmd, rest = argv[0], argv[1:]
+    if cmd in ("ui", "serve", "web"):
+        return ui_cmd(rest)
+    if cmd == "clips":
+        return clips_cmd(rest)
+    # No subcommand: the original `clipbot VIDEO AUDIO` form.
+    return edit_cmd(argv)
 
 
 if __name__ == "__main__":

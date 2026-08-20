@@ -1,4 +1,10 @@
-librosa>=1.0.0
-scenedetect>=0.7.1
+# Analysis
+librosa>=1.0.0           # beat tracking — music mode only
+scenedetect>=0.7.1       # shot detection — music mode only
 numpy>=2.0
 soundfile>=0.13
+
+# Web UI
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

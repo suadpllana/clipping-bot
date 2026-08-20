@@ -14,26 +14,70 @@ _WINGET_BIN = (
     / "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
 )
 
+# Homebrew does not always put its bin on PATH for GUI-launched processes.
+_EXTRA_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
+
+_INSTALL_HINT = (
+    "Install it with:\n"
+    "  macOS    brew install ffmpeg\n"
+    "  Windows  winget install Gyan.FFmpeg\n"
+    "  Linux    sudo apt install ffmpeg"
+)
+
+_cache: dict[str, str] = {}
+
 
 def _resolve(name: str) -> str:
-    """Find a binary on PATH, falling back to the winget install location.
+    """Find a binary on PATH, falling back to known install locations.
 
-    winget edits PATH for *new* shells, so a freshly-installed ffmpeg is often
-    invisible to the process that installed it. Look in the package dir too.
+    Package managers edit PATH for *new* shells, so a freshly-installed ffmpeg
+    is often invisible to the process that installed it. Look in the usual
+    package directories too.
+
+    Resolution is lazy and cached rather than done at import: the web server
+    must be able to start and report a readable error instead of dying with an
+    ImportError traceback before it can serve a page.
     """
+    if name in _cache:
+        return _cache[name]
+
     found = shutil.which(name)
-    if found:
-        return found
-    if _WINGET_BIN.exists():
+    if not found:
+        for d in _EXTRA_DIRS:
+            cand = Path(d) / name
+            if cand.is_file() and os.access(cand, os.X_OK):
+                found = str(cand)
+                break
+    if not found and _WINGET_BIN.exists():
         for exe in _WINGET_BIN.glob(f"*/bin/{name}.exe"):
-            return str(exe)
-    raise RuntimeError(
-        f"{name} not found. Install it with:  winget install Gyan.FFmpeg"
-    )
+            found = str(exe)
+            break
+    if not found:
+        raise RuntimeError(f"{name} not found. {_INSTALL_HINT}")
+
+    _cache[name] = found
+    return found
 
 
-FFMPEG = _resolve("ffmpeg")
-FFPROBE = _resolve("ffprobe")
+def ffmpeg_bin() -> str:
+    return _resolve("ffmpeg")
+
+
+def ffprobe_bin() -> str:
+    return _resolve("ffprobe")
+
+
+def missing_tools() -> list[str]:
+    """Which of the required binaries are absent. Empty list means good to go."""
+    out = []
+    for name in ("ffmpeg", "ffprobe"):
+        try:
+            _resolve(name)
+        except RuntimeError:
+            out.append(name)
+    return out
+
+
 
 
 @dataclass
@@ -47,7 +91,7 @@ class MediaInfo:
 
 def probe(path: Path) -> MediaInfo:
     out = subprocess.run(
-        [FFPROBE, "-v", "error", "-print_format", "json",
+        [ffprobe_bin(), "-v", "error", "-print_format", "json",
          "-show_format", "-show_streams", str(path)],
         capture_output=True, text=True, check=True,
     ).stdout
@@ -63,6 +107,14 @@ def probe(path: Path) -> MediaInfo:
     fps = float(num) / float(den) if den and float(den) != 0 else 30.0
 
     duration = float(data["format"].get("duration") or video.get("duration") or 0.0)
+
+    # Phones and some cameras tag rotation in metadata rather than baking it in;
+    # ffprobe reports the stored dimensions, so 1080x1920 portrait footage looks
+    # like landscape here and gets cropped the wrong way round.
+    if _rotated_quarter_turn(video):
+        return MediaInfo(duration, int(video["height"]), int(video["width"]),
+                         fps or 30.0, has_audio)
+
     return MediaInfo(
         duration=duration,
         width=int(video["width"]),
@@ -72,10 +124,24 @@ def probe(path: Path) -> MediaInfo:
     )
 
 
+def _rotated_quarter_turn(video: dict) -> bool:
+    rot = 0.0
+    for sd in video.get("side_data_list") or []:
+        if "rotation" in sd:
+            rot = float(sd["rotation"])
+    tag = (video.get("tags") or {}).get("rotate")
+    if tag:
+        try:
+            rot = float(tag)
+        except ValueError:
+            pass
+    return abs(int(round(rot)) % 180) == 90
+
+
 def run(args: list[str], *, quiet: bool = True) -> None:
     """Run ffmpeg, raising with real stderr on failure."""
     proc = subprocess.run(
-        [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *args],
+        [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *args],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:

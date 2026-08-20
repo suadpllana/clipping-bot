@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clipbot</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✂️</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="mark">✂</span>
+    <div>
+      <h1>clipbot</h1>
+      <p class="tag">full episode in, ready-to-post clips out</p>
+    </div>
+  </div>
+  <div class="health" id="health" aria-live="polite"></div>
+</header>
+
+<main>
+
+  <!-- ── step 1 : source ─────────────────────────────────────────── -->
+  <section class="card" id="step-source">
+    <div class="card-head">
+      <span class="step">1</span>
+      <h2>Your video</h2>
+    </div>
+
+    <div class="drop" id="drop" tabindex="0" role="button"
+         aria-label="Choose or drop a video file">
+      <div class="drop-inner">
+        <svg viewBox="0 0 24 24" class="drop-icon" aria-hidden="true">
+          <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" fill="none"
+                stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3 15v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3" fill="none"
+                stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <p class="drop-title">Drop a movie or episode here</p>
+        <p class="drop-sub">mp4 · mkv · mov · webm · avi · m4v · ts — any length</p>
+      </div>
+      <input type="file" id="file" accept="video/*,.mkv,.ts,.m2ts" hidden>
+    </div>
+
+    <div class="upload hidden" id="upload">
+      <div class="upload-row">
+        <span class="upload-name" id="upload-name">…</span>
+        <span class="upload-pct" id="upload-pct">0%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" id="upload-bar"></div></div>
+      <p class="upload-note" id="upload-note">uploading</p>
+    </div>
+
+    <div class="source hidden" id="source">
+      <div class="source-main">
+        <span class="ok">✓</span>
+        <div>
+          <p class="source-name" id="source-name"></p>
+          <p class="source-meta" id="source-meta"></p>
+        </div>
+      </div>
+      <button class="ghost" id="source-clear" type="button">Change</button>
+    </div>
+  </section>
+
+  <!-- ── step 2 : settings ───────────────────────────────────────── -->
+  <section class="card locked" id="step-config" aria-disabled="true">
+    <div class="card-head">
+      <span class="step">2</span>
+      <h2>How should it cut?</h2>
+    </div>
+
+    <div class="modes" role="radiogroup" aria-label="Clip style">
+      <label class="mode selected">
+        <input type="radio" name="mode" value="highlight" checked>
+        <span class="mode-title">Highlights</span>
+        <span class="mode-desc">Finds the best moments and cuts them straight —
+          original audio, dialogue intact. This is the one you want for an
+          episode or a film.</span>
+      </label>
+      <label class="mode">
+        <input type="radio" name="mode" value="music">
+        <span class="mode-title">Beat-synced edit</span>
+        <span class="mode-desc">Montage of shots from across the source, cut to
+          a track you supply. Needs a song.</span>
+      </label>
+    </div>
+
+    <div class="music-slot hidden" id="music-slot">
+      <div class="drop small" id="music-drop" tabindex="0" role="button"
+           aria-label="Choose or drop a music track">
+        <div class="drop-inner">
+          <p class="drop-title" id="music-title">Drop the track</p>
+          <p class="drop-sub" id="music-sub">mp3 · wav · m4a · flac · ogg</p>
+        </div>
+        <input type="file" id="music-file" accept="audio/*" hidden>
+      </div>
+      <div class="bar thin hidden" id="music-barwrap">
+        <div class="bar-fill" id="music-bar"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="field">
+        <label for="count">How many clips</label>
+        <div class="stepper">
+          <button type="button" data-nudge="count:-1" aria-label="fewer">–</button>
+          <input type="number" id="count" min="1" max="40" step="1" value="5">
+          <button type="button" data-nudge="count:1" aria-label="more">+</button>
+        </div>
+        <p class="hint" id="count-hint">spread across the runtime</p>
+      </div>
+
+      <div class="field">
+        <label for="length">Seconds each</label>
+        <div class="stepper">
+          <button type="button" data-nudge="length:-5" aria-label="shorter">–</button>
+          <input type="number" id="length" min="3" max="180" step="1" value="30">
+          <button type="button" data-nudge="length:5" aria-label="longer">+</button>
+        </div>
+        <div class="chips" id="length-chips">
+          <button type="button" data-length="15">15</button>
+          <button type="button" data-length="30" class="on">30</button>
+          <button type="button" data-length="45">45</button>
+          <button type="button" data-length="60">60</button>
+          <button type="button" data-length="90">90</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="aspect">Shape</label>
+        <select id="aspect">
+          <option value="9:16" selected>9:16 — TikTok / Reels / Shorts</option>
+          <option value="4:5">4:5 — Instagram feed</option>
+          <option value="1:1">1:1 — square</option>
+          <option value="16:9">16:9 — landscape</option>
+        </select>
+        <p class="hint">vertical crops follow the action shot by shot</p>
+      </div>
+
+      <div class="field">
+        <label for="quality">Quality</label>
+        <select id="quality">
+          <option value="max">Max — biggest files</option>
+          <option value="high" selected>High — recommended</option>
+          <option value="balanced">Balanced</option>
+          <option value="small">Small — fastest upload</option>
+        </select>
+        <p class="hint">every clip is 1080p, audio at −14 LUFS</p>
+      </div>
+    </div>
+
+    <details class="more">
+      <summary>Trims &amp; extras</summary>
+      <div class="grid tight">
+        <div class="field">
+          <label for="skip-intro">Skip first (seconds)</label>
+          <input type="number" id="skip-intro" min="0" step="5" value="0">
+          <p class="hint">studio logos, recaps, OP</p>
+        </div>
+        <div class="field">
+          <label for="skip-outro">Skip last (seconds)</label>
+          <input type="number" id="skip-outro" min="0" step="5" value="0">
+          <p class="hint">credits, ED, next-episode preview</p>
+        </div>
+        <div class="field">
+          <label for="seed">Seed</label>
+          <input type="number" id="seed" min="0" step="1" placeholder="random">
+          <p class="hint">same seed, same beat-synced edit</p>
+        </div>
+      </div>
+      <div class="toggles">
+        <label class="check">
+          <input type="checkbox" id="sharpen" checked>
+          <span>Sharpen after crop <em>— counters the upscale from a wide
+            source</em></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="normalize" checked>
+          <span>Normalise loudness to −14 LUFS <em>— what the platforms
+            target</em></span>
+        </label>
+      </div>
+    </details>
+
+    <div class="go">
+      <button class="primary" id="go" type="button" disabled>Make clips</button>
+      <p class="go-note" id="go-note">add a video first</p>
+    </div>
+  </section>
+
+  <!-- ── step 3 : progress ───────────────────────────────────────── -->
+  <section class="card hidden" id="step-run">
+    <div class="card-head">
+      <span class="step">3</span>
+      <h2 id="run-title">Working…</h2>
+      <button class="ghost danger" id="cancel" type="button">Cancel</button>
+    </div>
+    <div class="bar big"><div class="bar-fill" id="run-bar"></div></div>
+    <div class="run-meta">
+      <span id="run-msg">starting</span>
+      <span id="run-time"></span>
+    </div>
+    <ol class="stages" id="stages">
+      <li data-stage="scan">Watching the source</li>
+      <li data-stage="select">Picking moments</li>
+      <li data-stage="render">Rendering clips</li>
+      <li data-stage="done">Done</li>
+    </ol>
+    <p class="err hidden" id="run-err"></p>
+  </section>
+
+  <!-- ── step 4 : results ────────────────────────────────────────── -->
+  <section class="card hidden" id="step-out">
+    <div class="card-head">
+      <span class="step done">✓</span>
+      <h2 id="out-title">Your clips</h2>
+      <div class="out-actions">
+        <button class="ghost" id="again" type="button">New batch</button>
+        <button class="primary" id="zip" type="button">Download all</button>
+      </div>
+    </div>
+    <div class="clips" id="clips"></div>
+  </section>
+
+</main>
+
+<footer>
+  <span id="foot-data"></span>
+  <span>clips are written to disk — nothing leaves this machine</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

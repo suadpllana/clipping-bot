@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from scenedetect import AdaptiveDetector, ContentDetector, detect
 
-from .ffmpeg import FFMPEG, MediaInfo, probe
+from .ffmpeg import ffmpeg_bin, probe
 
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".wmv", ".flv"}
 
@@ -88,7 +88,7 @@ def _sample_frames(shot: Shot, n: int = 3) -> np.ndarray | None:
     frames = []
     for t in times:
         proc = subprocess.run(
-            [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+            [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-nostdin",
              "-ss", f"{t:.3f}", "-i", str(shot.src), "-frames:v", "1",
              "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"],
             capture_output=True,
