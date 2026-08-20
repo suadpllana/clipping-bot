@@ -1,0 +1,4 @@
+librosa>=1.0.0
+scenedetect>=0.7.1
+numpy>=2.0
+soundfile>=0.13
