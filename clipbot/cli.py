@@ -198,8 +198,18 @@ def clips_cmd(argv: list[str]) -> int:
                          "of straight highlight cuts.")
     ap.add_argument("--aspect", default="9:16",
                     choices=["9:16", "4:5", "1:1", "16:9"])
+    ap.add_argument("--frame", default="auto",
+                    choices=["auto", "fit", "fill", "pad"],
+                    help="How a widescreen source becomes vertical. fit keeps "
+                         "the whole frame over a blurred copy of itself; fill "
+                         "crops to the action and loses the sides; pad uses "
+                         "flat black. auto picks fit whenever a crop would "
+                         "throw away real picture.")
     ap.add_argument("--quality", default="high",
                     choices=["max", "high", "balanced", "small"])
+    ap.add_argument("--no-auto-skip", action="store_true",
+                    help="Do not detect and avoid the recap, opening, ending "
+                         "and next-episode preview.")
     ap.add_argument("--skip-intro", type=float, default=0.0)
     ap.add_argument("--skip-outro", type=float, default=0.0)
     ap.add_argument("--no-sharpen", action="store_true")
@@ -210,7 +220,8 @@ def clips_cmd(argv: list[str]) -> int:
     settings = Settings(
         video=args.video, out_dir=args.out, count=args.count, length=args.secs,
         mode="music" if args.music else "highlight", audio=args.music,
-        aspect=args.aspect, quality=args.quality,
+        aspect=args.aspect, frame=args.frame, quality=args.quality,
+        auto_skip=not args.no_auto_skip,
         skip_intro=args.skip_intro, skip_outro=args.skip_outro,
         sharpen=not args.no_sharpen, normalize_audio=not args.no_normalize,
         seed=args.seed,

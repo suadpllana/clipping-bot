@@ -3,7 +3,16 @@
 This is the "upload an episode, get clips" path. Unlike the music path it keeps
 the source's own audio, so a clip is a real excerpt — dialogue intact, in sync —
 rather than a montage. Selection is driven by the coarse `Timeline` from
-`analyze`, so the whole film is only decoded once.
+`analyze` and the structure map from `segments`, so the whole film is only
+decoded once.
+
+Two kinds of moment are worth clipping and they look nothing alike. A fight is
+motion, impacts and fast cutting. A scene worth listening to is the opposite:
+somebody talking, held shots, the energy in the delivery rather than the
+frame. Scoring them on one blended curve finds neither — it rewards whatever
+is merely busy, which is why the credits and the opening theme used to win. So
+each is scored on its own terms and a window is judged by whichever it is
+better at.
 """
 from __future__ import annotations
 
@@ -14,6 +23,7 @@ import numpy as np
 
 from .analyze import Timeline, refine_cuts
 from .ffmpeg import probe, run
+from .segments import Structure
 
 # Output geometry per aspect. Vertical is the default because that is what the
 # format is for; the others exist because not every clip is going to TikTok.
@@ -24,6 +34,17 @@ ASPECTS = {
     "16:9": (1920, 1080),
 }
 
+# How a source that is the wrong shape for the output gets there.
+#   fit   whole frame, scaled to fit, blurred copy of itself behind it
+#   fill  scaled up and cropped to the action — loses the sides
+#   pad   whole frame on flat black
+FRAMES = ("auto", "fit", "fill", "pad")
+
+# Below this much of the frame surviving a fill-crop, `auto` stops cropping.
+# 16:9 into 9:16 keeps 32% — two thirds of every shot thrown away, which is
+# what makes a cropped clip read as a mistake rather than a framing choice.
+_FILL_FLOOR = 0.88
+
 
 @dataclass
 class Clip:
@@ -31,6 +52,7 @@ class Clip:
     start: float
     end: float
     score: float
+    kind: str = "moment"          # fight | talk | moment
     # (time_from_clip_start, horizontal_crop_position 0..1) — steps at shot cuts
     framing: list[tuple[float, float]] = field(default_factory=list)
     path: Path | None = None
@@ -41,47 +63,90 @@ class Clip:
         return self.end - self.start
 
 
-def _interest(tl: Timeline) -> np.ndarray:
-    """Per-sample "is something happening here" score, 0..1.
+# --------------------------------------------------------------------------
+# what makes a moment
+# --------------------------------------------------------------------------
 
-    Visual movement alone ranks the credits scroll and a shaky establishing
-    shot as highly as a fight. Audio is what disambiguates: loudness says
-    something is playing, and local dynamics say something is *happening* —
-    dialogue and impacts modulate, room tone and a score drone do not.
+def _cut_rate(tl: Timeline) -> np.ndarray:
+    """Cuts per second, smoothed — a proxy for editorial intensity."""
+    n = len(tl.brightness)
+    if len(tl.cuts) < 3:
+        return np.zeros(n, dtype=np.float32)
+    rate = np.zeros(n, dtype=np.float32)
+    idx = np.clip((tl.cuts * tl.fps).astype(int), 0, n - 1)
+    rate[idx] = 1.0
+    k = max(int(tl.fps * 6), 3)
+    dens = np.convolve(rate, np.ones(k, dtype=np.float32) / k, mode="same")
+    hi = float(dens.max())
+    return dens / hi if hi > 1e-6 else dens
+
+
+def _voiceness(tl: Timeline) -> np.ndarray:
+    """0..1 "somebody is speaking here".
+
+    The subtitle track, where there is one, is a human being's answer to that
+    question and beats any spectral guess. It is still blended rather than
+    used alone: a cue is on or off, and the audio underneath it says whether
+    the line is muttered or screamed.
     """
-    vis = 0.62 * tl.motion + 0.38 * tl.contrast
+    heard = np.clip(tl.voice * np.clip(tl.speech / 0.62, 0.0, 1.35), 0.0, 1.0)
+    if tl.dialogue is None:
+        return heard
+    return np.clip(0.62 * tl.dialogue + 0.38 * heard, 0.0, 1.0)
 
-    if tl.has_audio and float(tl.loudness.max()) > 0.02:
-        aud = 0.45 * tl.loudness + 0.55 * tl.dynamics
-        score = 0.48 * vis + 0.52 * aud
+
+def _archetypes(tl: Timeline, weight: np.ndarray
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """Per-sample scores for the two things worth clipping: fight, talk."""
+    vis = np.clip(0.68 * tl.motion + 0.32 * tl.contrast, 0.0, 1.0)
+    cuts = _cut_rate(tl)
+
+    if tl.has_audio:
+        # A theme song is loud, fast and busy; the thing that gives it away is
+        # that the level never drops. Discount both archetypes by it so a
+        # montage that slipped past `segments` cannot win on energy alone.
+        calm = 1.0 - 0.55 * tl.bed
+        fight = (0.42 * vis + 0.30 * tl.impact + 0.16 * tl.loudness
+                 + 0.12 * cuts) * calm
+        # Loud on its own is an explosion in an empty room. Delivery is the
+        # dynamics: a line rising into a shout modulates, a monologue does not.
+        heat = 0.34 + 0.36 * tl.dynamics + 0.30 * tl.loudness
+        talk = _voiceness(tl) * heat * calm
     else:
-        score = vis
-
-    # Cut rate as a proxy for editorial intensity — a densely cut passage is
-    # almost always a set piece or an emotional peak.
-    if len(tl.cuts) > 2:
-        n = len(tl.brightness)
-        rate = np.zeros(n, dtype=np.float32)
-        idx = np.clip((tl.cuts * tl.fps).astype(int), 0, n - 1)
-        rate[idx] = 1.0
-        k = max(int(tl.fps * 6), 3)
-        kern = np.ones(k, dtype=np.float32) / k
-        dens = np.convolve(rate, kern, mode="same")
-        hi = float(dens.max())
-        if hi > 1e-6:
-            score = score + 0.14 * (dens / hi)
+        fight = 0.72 * vis + 0.28 * cuts
+        talk = np.zeros_like(fight)
 
     # Black frames, fades and flat title cards are never the clip.
     dark = tl.brightness < max(0.02, float(np.median(tl.brightness)) * 0.3)
-    score = np.where(dark | (tl.contrast < 0.03), score * 0.05, score)
+    kill = np.where(dark | (tl.contrast < 0.03), 0.05, 1.0).astype(np.float32)
 
     # Smooth so a single loud frame cannot win a window on its own.
     k = max(int(tl.fps * 1.5), 3)
     kern = np.ones(k, dtype=np.float32) / k
-    score = np.convolve(score, kern, mode="same")
+    out = []
+    for a in (fight, talk):
+        a = np.convolve(a * kill * weight, kern, mode="same")
+        # Normalise each archetype against its own spread over the usable part
+        # of the file, so "the best fight" and "the best conversation" land on
+        # the same scale and a talky episode is not scored as though nothing
+        # happened in it.
+        live = a[weight > 0.5]
+        hi = float(np.percentile(live if len(live) > 8 else a, 97.0))
+        out.append(a / hi if hi > 1e-6 else a)
+    return np.clip(out[0], 0.0, 1.4), np.clip(out[1], 0.0, 1.4)
 
-    hi = float(score.max())
-    return score / hi if hi > 1e-6 else score
+
+def _windows(sig: np.ndarray, win: int) -> np.ndarray:
+    """Score of a clip-length window starting at each sample.
+
+    Mostly the mean — a clip is however many seconds long and all of them have
+    to hold up — but with a share from the peak, which is what separates a
+    scene with a moment in it from one that is evenly mildly interesting.
+    """
+    cum = np.concatenate([[0.0], np.cumsum(sig)])
+    mean = (cum[win:] - cum[:-win]) / win
+    view = np.lib.stride_tricks.sliding_window_view(sig, win)
+    return (0.76 * mean + 0.24 * view.max(axis=-1)).astype(np.float32)
 
 
 def select(
@@ -89,6 +154,7 @@ def select(
     *,
     count: int,
     length: float,
+    structure: Structure | None = None,
     skip_intro: float = 0.0,
     skip_outro: float = 0.0,
     min_gap: float | None = None,
@@ -97,18 +163,23 @@ def select(
 
     Greedy on window score with an enforced gap, which spreads picks across the
     runtime. Taking the literal top N instead would hand back five clips of the
-    same two-minute battle.
+    same two-minute battle. Where there is enough of both, the batch is held to
+    a mix of fights and conversations rather than whichever the episode has
+    more of.
     """
-    interest = _interest(tl)
+    n = len(tl.brightness)
+    weight = (structure.weight if structure is not None and structure.weight is not None
+              else np.ones(n, dtype=np.float32))
+    fight, talk = _archetypes(tl, weight)
     fps = tl.fps
     win = max(int(round(length * fps)), 2)
 
-    if win >= len(interest):
+    if win >= n:
         return [Clip(index=0, start=0.0, end=min(length, tl.duration), score=1.0)]
 
-    # Rolling mean of the interest signal — the score of a window starting at i.
-    cum = np.concatenate([[0.0], np.cumsum(interest)])
-    scores = (cum[win:] - cum[:-win]) / win
+    wf, wt = _windows(fight, win), _windows(talk, win)
+    scores = np.maximum(wf, wt)
+    kinds = np.where(wf >= wt, "fight", "talk")
 
     lo = int(skip_intro * fps)
     hi = len(scores) - int(skip_outro * fps)
@@ -125,64 +196,97 @@ def select(
     gap = int(min_gap * fps)
 
     order = np.argsort(scores)[::-1]
-    picks: list[int] = []
-    for i in order:
-        if len(picks) >= count:
-            break
-        if not mask[i]:
-            continue
-        if any(abs(int(i) - p) < gap for p in picks):
-            continue
-        picks.append(int(i))
+    # Never pick a window that reaches into a theme or a preview, however it
+    # scored. A clip that runs three seconds into the credits is not a clip
+    # that is 90% fine, so this is a share of the window rather than a mean of
+    # the weights: a montage stays eligible, a theme does not.
+    allowed = np.cumsum(np.concatenate([[0.0], (weight > 0.05).astype(np.float64)]))
+    live = (allowed[win:] - allowed[:-win]) / win >= 0.98
 
-    # Source too short (or too uniform) to honour the spacing — relax it rather
-    # than return fewer clips than asked for.
-    if len(picks) < count:
-        relaxed = int(length * fps * 1.02)
+    picks: list[int] = []
+    cap = int(np.ceil(count * 0.65)) if count >= 3 else count
+    taken = {"fight": 0, "talk": 0}
+
+    def sweep(gap_frames: int, quota: bool) -> None:
         for i in order:
             if len(picks) >= count:
-                break
+                return
             i = int(i)
-            if not mask[i] or i in picks:
+            if not mask[i] or not live[i] or i in picks:
                 continue
-            if any(abs(i - p) < relaxed for p in picks):
+            if any(abs(i - p) < gap_frames for p in picks):
+                continue
+            if quota and taken[kinds[i]] >= cap:
                 continue
             picks.append(i)
+            taken[kinds[i]] += 1
+
+    sweep(gap, quota=True)
+    sweep(gap, quota=False)          # one-sided episode: fill with what it has
+    if len(picks) < count:
+        # Source too short (or too uniform) to honour the spacing — relax it
+        # rather than return fewer clips than asked for.
+        sweep(int(length * fps * 1.02), quota=False)
+    if len(picks) < count:
+        live = np.ones(len(scores), dtype=bool)   # last resort: ignore structure
+        sweep(int(length * fps * 1.02), quota=False)
 
     picks.sort()
     return [
-        Clip(index=n, start=p / fps, end=p / fps + length, score=float(scores[p]))
-        for n, p in enumerate(picks)
+        Clip(index=k, start=p / fps, end=p / fps + length,
+             score=float(scores[p]), kind=str(kinds[p]))
+        for k, p in enumerate(picks)
     ]
 
 
-def snap_and_frame(src: Path, tl: Timeline, clips: list[Clip],
-                   *, snap: float = 1.2) -> list[Clip]:
-    """Align each clip to a real shot boundary and work out its framing.
+# --------------------------------------------------------------------------
+# alignment and framing
+# --------------------------------------------------------------------------
 
-    A clip that opens three frames into a shot reads as a mistake, so the start
-    is pulled to the nearest cut when one is close enough. Framing is then
-    resolved per shot inside the clip, because the subject moves between shots
-    and a single crop position for the whole clip loses them.
+def snap_and_frame(src: Path, tl: Timeline, clips: list[Clip],
+                   *, snap: float = 1.4) -> list[Clip]:
+    """Slide each clip onto shot boundaries and work out its framing.
+
+    A clip that opens three frames into a shot reads as a mistake, and one that
+    stops three frames before the next cut reads as a dropped connection. Both
+    ends are graded, and the whole window slides — length stays exactly what
+    was asked for.
     """
     total = tl.duration
     for c in clips:
         cuts = refine_cuts(src, c.start, c.end)
+        want = c.duration
         if cuts:
-            near = min(cuts, key=lambda t: abs(t - c.start))
-            if abs(near - c.start) <= snap:
-                # `duration` is derived from start/end, so it has to be read
-                # before start moves — otherwise the clip silently grows or
-                # shrinks by however far it was snapped.
-                want = c.duration
-                c.start = max(0.0, min(near, max(total - want, 0.0)))
+            best = _best_shift(c, cuts, tl, snap)
+            if best is not None:
+                c.start = max(0.0, min(best, max(total - want, 0.0)))
                 c.end = c.start + want
-                shift = near - c.start
-                cuts = [t - shift for t in cuts]
 
         inner = [t for t in cuts if c.start + 0.25 < t < c.end - 0.25]
         c.framing = _framing(tl, c, inner)
     return clips
+
+
+def _best_shift(clip: Clip, cuts: list[float], tl: Timeline,
+                snap: float) -> float | None:
+    """Pick the start time, near the chosen one, that lands both ends well."""
+    want = clip.duration
+    ends = list(cuts) + [a for a, _ in tl.quiet]
+
+    def grade(start: float) -> float:
+        end = start + want
+        near_end = min((abs(t - end) for t in ends), default=9.9)
+        score = 1.0 - min(near_end / 1.6, 1.0)
+        # Opening on black is worse than opening a beat late.
+        if tl.brightness[tl.index(start)] < 0.05:
+            score -= 1.5
+        return score - abs(start - clip.start) / max(snap, 1e-6) * 0.30
+
+    cands = [t for t in cuts if abs(t - clip.start) <= snap]
+    if not cands:
+        return None
+    cands.append(clip.start)
+    return max(cands, key=grade)
 
 
 def _framing(tl: Timeline, clip: Clip, cuts: list[float]) -> list[tuple[float, float]]:
@@ -190,7 +294,7 @@ def _framing(tl: Timeline, clip: Clip, cuts: list[float]) -> list[tuple[float, f
 
     Held constant within a shot and stepped at cuts — the step is invisible
     because it happens on a cut, whereas a continuously moving crop reads as a
-    drifting, unmotivated camera move.
+    drifting, unmotivated camera move. Only `fill` framing uses this.
     """
     bounds = [clip.start] + sorted(cuts) + [clip.end]
     out: list[tuple[float, float]] = []
@@ -232,9 +336,99 @@ def _crop_x(framing: list[tuple[float, float]]) -> str:
     return f"(iw-ow)*({expr})"
 
 
+# --------------------------------------------------------------------------
+# render
+# --------------------------------------------------------------------------
+
+def _even(x: float) -> int:
+    return max(int(round(x / 2.0)) * 2, 2)
+
+
+def resolve_frame(mode: str, src_w: int, src_h: int, aspect: str) -> str:
+    """Turn `auto` into a real framing choice for this source and shape."""
+    if mode in ("fit", "fill", "pad"):
+        return mode
+    ow, oh = ASPECTS.get(aspect, ASPECTS["9:16"])
+    if src_w <= 0 or src_h <= 0:
+        return "fit"
+    src_ar, out_ar = src_w / src_h, ow / oh
+    keep = min(src_ar, out_ar) / max(src_ar, out_ar)
+    return "fill" if keep >= _FILL_FLOOR else "fit"
+
+
+def _video_chain(clip: Clip, *, frame: str, src_w: int, src_h: int,
+                 aspect: str, sharpen: bool, fade: float) -> str:
+    """The whole -vf graph for one clip."""
+    ow, oh = ASPECTS.get(aspect, ASPECTS["9:16"])
+    # Rebase timestamps to zero first. A fast seek lands the video on the next
+    # whole frame but the audio on the next packet, which leaves the two
+    # streams starting tens of milliseconds apart in the container — enough to
+    # read as a lip-sync error. It also makes `t` in the filters below measure
+    # from the clip start, which the framing expression and the fades rely on.
+    head = "setpts=PTS-STARTPTS"
+    crisp = "unsharp=5:5:0.5:5:5:0.0" if sharpen else None
+
+    if frame == "fill":
+        chain = [
+            head,
+            f"scale={ow}:{oh}:force_original_aspect_ratio=increase:flags=lanczos",
+            f"crop={ow}:{oh}:x='{_crop_x(clip.framing)}':y=(ih-oh)/2",
+            "setsar=1",
+        ]
+        # Cropping 16:9 into 9:16 means upscaling ~1.8x; a light luma sharpen
+        # restores the edge definition that costs, without ringing.
+        if crisp:
+            chain.append(crisp)
+        graph = ",".join(chain)
+    else:
+        scale = min(ow / max(src_w, 1), oh / max(src_h, 1))
+        fw = min(_even(src_w * scale), ow)
+        fh = min(_even(src_h * scale), oh)
+        x, y = _even((ow - fw) / 2), _even((oh - fh) / 2)
+        # Overlay offsets have to be even or the chroma planes land half a
+        # sample out and the whole picture picks up a colour fringe.
+        x, y = min(x, ow - fw), min(y, oh - fh)
+
+        fg = [f"scale={fw}:{fh}:flags=lanczos"]
+        if crisp and scale > 1.02:
+            fg.append(crisp)
+        fg.append("setsar=1")
+
+        if frame == "pad":
+            graph = (f"{head},{','.join(fg)},"
+                     f"pad={ow}:{oh}:{x}:{y}:color=black")
+        else:
+            # The backdrop is the same frame, blown up to fill and blurred into
+            # abstraction. Blurring at full size costs more than the encode
+            # does, so it is done at a sixth of the resolution and scaled back
+            # up — at this radius the two are indistinguishable.
+            bw, bh = _even(ow / 6), _even(oh / 6)
+            bg = (f"scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+                  f"crop={bw}:{bh},gblur=sigma=7:steps=2,"
+                  f"eq=brightness=-0.09:saturation=1.45,"
+                  f"scale={ow}:{oh}:flags=bilinear,setsar=1")
+            graph = (f"{head},split=2[bgsrc][fgsrc];"
+                     f"[bgsrc]{bg}[bg];"
+                     f"[fgsrc]{','.join(fg)}[fg];"
+                     f"[bg][fg]overlay={x}:{y}:format=auto")
+
+    tail = ["format=yuv420p",
+            # Tag the colour space on the frames themselves. Passing
+            # -colorspace and friends as encoder options only lands the matrix
+            # in this ffmpeg build; untagged primaries/transfer are why a
+            # re-uploaded clip can come back looking washed out.
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"]
+    if fade > 0:
+        tail.append(f"fade=t=in:st=0:d={fade:.2f}")
+        tail.append(f"fade=t=out:st={max(clip.duration - fade, 0):.3f}:d={fade:.2f}")
+    return graph + "," + ",".join(tail)
+
+
 def render_clip(
     src: Path, clip: Clip, dst: Path, *,
     aspect: str = "9:16",
+    frame: str = "auto",
+    src_size: tuple[int, int] | None = None,
     crf: int = 19,
     sharpen: bool = True,
     has_audio: bool = True,
@@ -242,33 +436,14 @@ def render_clip(
     fade: float = 0.12,
 ) -> Path:
     """Cut and encode one clip, audio in sync, ready to upload."""
-    w, h = ASPECTS.get(aspect, ASPECTS["9:16"])
+    if src_size is None:
+        info = probe(src)
+        src_size = (info.width, info.height)
+    src_w, src_h = src_size
+    mode = resolve_frame(frame, src_w, src_h, aspect)
 
-    vf = [
-        # Rebase timestamps to zero first. A fast seek lands the video on the
-        # next whole frame but the audio on the next packet, which leaves the
-        # two streams starting tens of milliseconds apart in the container —
-        # enough to read as a lip-sync error. It also makes `t` in the filters
-        # below measure from the clip start, which the framing expression and
-        # the fades both rely on.
-        "setpts=PTS-STARTPTS",
-        f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={w}:{h}:x='{_crop_x(clip.framing)}':y=(ih-oh)/2",
-        "setsar=1",
-    ]
-    if sharpen:
-        # Cropping 16:9 into 9:16 means upscaling ~1.8x; a light luma sharpen
-        # restores the edge definition that costs, without ringing.
-        vf.append("unsharp=5:5:0.5:5:5:0.0")
-    vf.append("format=yuv420p")
-    # Tag the colour space on the frames themselves. Passing -colorspace and
-    # friends as encoder options only lands the matrix in this ffmpeg build;
-    # untagged primaries/transfer are why a re-uploaded clip can come back
-    # looking washed out.
-    vf.append("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709")
-    if fade > 0:
-        vf.append(f"fade=t=in:st=0:d={fade:.2f}")
-        vf.append(f"fade=t=out:st={max(clip.duration - fade, 0):.3f}:d={fade:.2f}")
+    vf = _video_chain(clip, frame=mode, src_w=src_w, src_h=src_h,
+                      aspect=aspect, sharpen=sharpen, fade=fade)
 
     args = [
         "-accurate_seek", "-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}",
@@ -294,7 +469,7 @@ def render_clip(
         maps = ["-map", "0:v:0", "-map", "1:a:0"]
 
     args += [
-        "-vf", ",".join(vf), *maps,
+        "-vf", vf, *maps,
         "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
         "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p",
         "-x264-params", "keyint=120:min-keyint=48:scenecut=40",

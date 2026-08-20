@@ -77,9 +77,10 @@
       <label class="mode selected">
         <input type="radio" name="mode" value="highlight" checked>
         <span class="mode-title">Highlights</span>
-        <span class="mode-desc">Finds the best moments and cuts them straight —
-          original audio, dialogue intact. This is the one you want for an
-          episode or a film.</span>
+        <span class="mode-desc">Finds the fights and the conversations worth
+          hearing and cuts them straight — original audio, dialogue intact.
+          Skips the recap, the opening and the credits. This is the one you
+          want for an episode or a film.</span>
       </label>
       <label class="mode">
         <input type="radio" name="mode" value="music">
@@ -138,7 +139,19 @@
           <option value="1:1">1:1 — square</option>
           <option value="16:9">16:9 — landscape</option>
         </select>
-        <p class="hint">vertical crops follow the action shot by shot</p>
+        <p class="hint">9:16 is what TikTok, Reels and Shorts want</p>
+      </div>
+
+      <div class="field">
+        <label for="frame">Framing</label>
+        <select id="frame">
+          <option value="auto" selected>Auto — fit unless nothing is lost</option>
+          <option value="fit">Fit — whole frame, blurred backdrop</option>
+          <option value="fill">Fill — crop to the action, lose the sides</option>
+          <option value="pad">Pad — whole frame on black</option>
+        </select>
+        <p class="hint" id="frame-hint">a 16:9 source cropped to 9:16 loses two
+          thirds of every shot</p>
       </div>
 
       <div class="field">
@@ -159,7 +172,7 @@
         <div class="field">
           <label for="skip-intro">Skip first (seconds)</label>
           <input type="number" id="skip-intro" min="0" step="5" value="0">
-          <p class="hint">studio logos, recaps, OP</p>
+          <p class="hint">on top of whatever is skipped automatically</p>
         </div>
         <div class="field">
           <label for="skip-outro">Skip last (seconds)</label>
@@ -173,6 +186,12 @@
         </div>
       </div>
       <div class="toggles">
+        <label class="check">
+          <input type="checkbox" id="auto-skip" checked>
+          <span>Skip recap, opening and credits <em>— finds them from the
+            music bed and the gaps in the dialogue, so the trims above are
+            only for what it misses</em></span>
+        </label>
         <label class="check">
           <input type="checkbox" id="sharpen" checked>
           <span>Sharpen after crop <em>— counters the upscale from a wide
