@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import highlight
+from . import highlight, segments
 from .analyze import scan
 from .ffmpeg import missing_tools, probe
 
@@ -40,7 +40,9 @@ class Settings:
     mode: str = "highlight"          # highlight | music
     audio: Path | None = None        # required for music mode
     aspect: str = "9:16"
+    frame: str = "auto"              # auto | fit | fill | pad
     quality: str = "high"
+    auto_skip: bool = True           # find and avoid recap / OP / ED / preview
     skip_intro: float = 0.0
     skip_outro: float = 0.0
     sharpen: bool = True
@@ -66,6 +68,8 @@ class Settings:
             raise ValueError("Clip length must be between 3 and 180 seconds.")
         if self.aspect not in highlight.ASPECTS:
             raise ValueError(f"Unknown aspect ratio: {self.aspect}")
+        if self.frame not in highlight.FRAMES:
+            raise ValueError(f"Unknown framing mode: {self.frame}")
 
 
 @dataclass
@@ -134,21 +138,35 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
     check()
     report("scan", 0.46, f"{len(tl.cuts)} shots detected")
 
-    # 2. pick the moments -------------------------------------------------
+    # 2. work out which parts are not the story ---------------------------
+    st = segments.analyse(tl, enabled=s.auto_skip)
+    skipped = st.summary()
+    if skipped:
+        how = "subtitles" if st.used_subs else "the audio"
+        report("select", 0.47, f"skipping {skipped} (found from {how})")
+    elif s.auto_skip:
+        report("select", 0.47, "no recap or theme found — using the whole file")
+
+    # 3. pick the moments -------------------------------------------------
     clips = highlight.select(
-        tl, count=s.count, length=s.length,
+        tl, count=s.count, length=s.length, structure=st,
         skip_intro=s.skip_intro, skip_outro=s.skip_outro,
     )
     if not clips:
         raise ValueError("Could not find any usable moments in this video.")
-    report("select", 0.49, f"{len(clips)} moments picked")
+    kinds = ", ".join(
+        f"{sum(c.kind == k for c in clips)} {k}"
+        for k in ("fight", "talk") if any(c.kind == k for c in clips)
+    )
+    report("select", 0.49, f"{len(clips)} moments picked" + (f" ({kinds})" if kinds else ""))
 
-    # 3. align to shot boundaries and resolve framing ----------------------
+    # 4. align to shot boundaries and resolve framing ----------------------
     clips = highlight.snap_and_frame(s.video, tl, clips)
     check()
-    report("select", 0.52, "aligned to shot boundaries")
+    mode = highlight.resolve_frame(s.frame, info.width, info.height, s.aspect)
+    report("select", 0.52, f"aligned to shot boundaries — {_FRAME_NOTE[mode]}")
 
-    # 4. render -----------------------------------------------------------
+    # 5. render -----------------------------------------------------------
     has_audio = tl.has_audio
     crf = QUALITY.get(s.quality, 19)
     out: list[ClipResult] = []
@@ -162,7 +180,8 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
         name = f"clip_{n + 1:02d}_{_stamp(c.start)}.mp4"
         dst = s.out_dir / name
         highlight.render_clip(
-            s.video, c, dst, aspect=s.aspect, crf=crf, sharpen=s.sharpen,
+            s.video, c, dst, aspect=s.aspect, frame=s.frame,
+            src_size=(info.width, info.height), crf=crf, sharpen=s.sharpen,
             has_audio=has_audio, normalize_audio=s.normalize_audio,
         )
         thumb = highlight.make_thumb(dst, s.out_dir / f"{dst.stem}.jpg")
@@ -173,21 +192,33 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
             tags=_tags(tl, c),
         ))
 
+
     report("done", 1.0, f"{len(out)} clips ready")
     return out
+
+
+_FRAME_NOTE = {
+    "fit": "whole frame, blurred backdrop",
+    "fill": "cropped to the action",
+    "pad": "whole frame on black",
+}
 
 
 def _tags(tl, clip) -> list[str]:
     """Short labels describing why a moment was picked, for the results grid."""
     i, j = tl.index(clip.start), tl.index(clip.end)
     sl = slice(i, max(j, i + 1))
-    tags: list[str] = []
-    if float(tl.motion[sl].mean()) > 0.35:
+    tags: list[str] = [clip.kind] if clip.kind in ("fight", "talk") else []
+
+    if float(tl.motion[sl].mean()) > 0.35 and "fight" not in tags:
         tags.append("action")
-    if tl.has_audio and float(tl.dynamics[sl].mean()) > 0.35:
-        tags.append("dialogue")
+    if ("talk" not in tags and tl.dialogue is not None
+            and float(tl.dialogue[sl].mean()) > 0.72):
+        tags.append("talky")
     if tl.has_audio and float(tl.loudness[sl].mean()) > 0.62:
         tags.append("loud")
+    if tl.has_audio and float(tl.bed[sl].mean()) > 0.45:
+        tags.append("scored")
     cuts = int(((tl.cuts >= clip.start) & (tl.cuts < clip.end)).sum())
     if cuts >= max(int(clip.duration / 2.5), 3):
         tags.append("fast-cut")

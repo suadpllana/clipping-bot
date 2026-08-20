@@ -220,7 +220,9 @@ async function start() {
     count: +$('count').value,
     length: +$('length').value,
     aspect: $('aspect').value,
+    frame: $('frame').value,
     quality: $('quality').value,
+    auto_skip: $('auto-skip').checked,
     skip_intro: +$('skip-intro').value || 0,
     skip_outro: +$('skip-outro').value || 0,
     sharpen: $('sharpen').checked,
@@ -400,7 +402,7 @@ document.querySelectorAll('#length-chips button').forEach((c) => on(c, 'click', 
 
 ['count', 'length', 'skip-intro', 'skip-outro'].forEach((id) =>
   on($(id), 'input', () => { if (id === 'length') markChips($(id).value); suggest(); refreshGo(); }));
-['aspect', 'quality'].forEach((id) => on($(id), 'change', refreshGo));
+['aspect', 'frame', 'quality'].forEach((id) => on($(id), 'change', refreshGo));
 on($('skip-intro'), 'change', () => { suggest(); refreshGo(); });
 on($('skip-outro'), 'change', () => { suggest(); refreshGo(); });
 

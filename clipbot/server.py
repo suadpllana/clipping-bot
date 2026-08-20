@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .ffmpeg import missing_tools, probe
-from .highlight import ASPECTS
+from .highlight import ASPECTS, FRAMES
 from .jobs import DONE, RUNNING, JobStore, clip_path, thumb_path
 from .pipeline import QUALITY, Settings
 
@@ -83,6 +83,7 @@ def health() -> dict:
         "ready": not miss,
         "missing": miss,
         "aspects": list(ASPECTS),
+        "frames": list(FRAMES),
         "qualities": list(QUALITY),
         "data_dir": str(DATA),
         "free_gb": round(usage.free / 2**30, 1),
@@ -191,7 +192,9 @@ async def create_job(request: Request) -> JSONResponse:
         mode=mode,
         audio=audio,
         aspect=str(body.get("aspect", "9:16")),
+        frame=str(body.get("frame", "auto")),
         quality=str(body.get("quality", "high")),
+        auto_skip=bool(body.get("auto_skip", True)),
         skip_intro=skip_intro,
         skip_outro=skip_outro,
         sharpen=bool(body.get("sharpen", True)),
