@@ -100,14 +100,37 @@ does not get that back — which is why `--frame` defaults to not doing it.
 
 | `--frame` | |
 |---|---|
-| `fit` | The whole frame at full width, over a blurred, desaturated copy of itself. What most vertical clips of widescreen footage actually look like, and the only mode that shows the shot as it was framed. |
+| `fit` | The picture over a blurred, desaturated copy of itself. How much picture is `--zoom`, below. |
 | `fill` | Scaled up and cropped. The crop position is resolved *per shot* from where the activity is and held constant within the shot, so it steps on a cut where the step is invisible — a continuously moving crop reads as a drifting, unmotivated camera. |
-| `pad` | The whole frame on flat black. |
+| `pad` | The same as `fit` but on flat black. |
 | `auto` | The default. `fill` when the source is already near the output shape and a crop costs nothing, `fit` otherwise. |
 
 The backdrop is blurred at a sixth of the output resolution and scaled back up.
 At that radius it is indistinguishable from blurring at full size, and it costs
 about as much as one extra scale.
+
+### `--zoom`
+
+The whole 16:9 frame in a 9:16 canvas is 32% of its height — everything is
+visible and everything is small. `--zoom` is the dial between that and a full
+crop, rather than a third mode:
+
+| `--zoom` | 16:9 into 9:16 |
+|---|---|
+| `1.0` | whole frame, picture 32% of the height |
+| `1.4` | 71% of the width, picture 44% of the height — **the default** |
+| `1.8` | 56% of the width, 57% of the height |
+| `3.2`+ | the picture covers the canvas: identical to `fill` |
+
+Past the point where the picture already covers the canvas, more zoom only
+throws frame away, so it's clamped there. A source that is *already* the output
+shape therefore ignores `--zoom` entirely instead of being cropped for nothing.
+When zoom does trim the sides, it trims them at the same per-shot position
+`fill` uses, so what survives is where the action is.
+
+If the picture still reads as too small, the other lever is the output shape
+itself: `--aspect 4:5` is a shorter canvas, so the same picture fills 45% of it
+at `--zoom 1.0`.
 
 ## Command line
 
@@ -130,6 +153,7 @@ clipbot VIDEO SONG.mp3 -d 30          the original single edit
 | `--music` | Supply a track to get beat-synced montages |
 | `--aspect` | `9:16`, `4:5`, `1:1`, `16:9` |
 | `--frame` | `auto`, `fit`, `fill`, `pad` — see *Shape and framing* |
+| `--zoom` | How big the picture is inside the frame. 1.0 shows all of it |
 | `--quality` | `max`, `high`, `balanced`, `small` |
 | `--no-auto-skip` | Don't detect the recap / OP / ED / preview |
 | `--skip-intro` / `--skip-outro` | Ignore a fixed number of seconds as well |

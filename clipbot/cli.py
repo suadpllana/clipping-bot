@@ -205,6 +205,10 @@ def clips_cmd(argv: list[str]) -> int:
                          "crops to the action and loses the sides; pad uses "
                          "flat black. auto picks fit whenever a crop would "
                          "throw away real picture.")
+    ap.add_argument("--zoom", type=float, default=1.4, metavar="Z",
+                    help="How far into the frame fit/pad push. 1.0 shows the "
+                         "whole frame; higher makes the picture bigger and "
+                         "trims the sides, until it reaches a full crop.")
     ap.add_argument("--quality", default="high",
                     choices=["max", "high", "balanced", "small"])
     ap.add_argument("--no-auto-skip", action="store_true",
@@ -220,7 +224,8 @@ def clips_cmd(argv: list[str]) -> int:
     settings = Settings(
         video=args.video, out_dir=args.out, count=args.count, length=args.secs,
         mode="music" if args.music else "highlight", audio=args.music,
-        aspect=args.aspect, frame=args.frame, quality=args.quality,
+        aspect=args.aspect, frame=args.frame, zoom=args.zoom,
+        quality=args.quality,
         auto_skip=not args.no_auto_skip,
         skip_intro=args.skip_intro, skip_outro=args.skip_outro,
         sharpen=not args.no_sharpen, normalize_audio=not args.no_normalize,

@@ -177,6 +177,7 @@ async def create_job(request: Request) -> JSONResponse:
     try:
         count = int(body.get("count", 5))
         length = float(body.get("length", 30))
+        zoom = float(body.get("zoom", 1.4) or 1.4)
         skip_intro = max(float(body.get("skip_intro", 0) or 0), 0.0)
         skip_outro = max(float(body.get("skip_outro", 0) or 0), 0.0)
         seed = int(body.get("seed") or (int(time.time()) % 100000))
@@ -193,6 +194,7 @@ async def create_job(request: Request) -> JSONResponse:
         audio=audio,
         aspect=str(body.get("aspect", "9:16")),
         frame=str(body.get("frame", "auto")),
+        zoom=zoom,
         quality=str(body.get("quality", "high")),
         auto_skip=bool(body.get("auto_skip", True)),
         skip_intro=skip_intro,

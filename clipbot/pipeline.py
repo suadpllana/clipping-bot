@@ -41,6 +41,7 @@ class Settings:
     audio: Path | None = None        # required for music mode
     aspect: str = "9:16"
     frame: str = "auto"              # auto | fit | fill | pad
+    zoom: float = 1.4                # how far into the frame `fit`/`pad` push
     quality: str = "high"
     auto_skip: bool = True           # find and avoid recap / OP / ED / preview
     skip_intro: float = 0.0
@@ -70,6 +71,8 @@ class Settings:
             raise ValueError(f"Unknown aspect ratio: {self.aspect}")
         if self.frame not in highlight.FRAMES:
             raise ValueError(f"Unknown framing mode: {self.frame}")
+        if not 1.0 <= self.zoom <= 4.0:
+            raise ValueError("Zoom must be between 1.0 and 4.0.")
 
 
 @dataclass
@@ -164,7 +167,8 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
     clips = highlight.snap_and_frame(s.video, tl, clips)
     check()
     mode = highlight.resolve_frame(s.frame, info.width, info.height, s.aspect)
-    report("select", 0.52, f"aligned to shot boundaries — {_FRAME_NOTE[mode]}")
+    note = highlight.frame_note(mode, s.zoom, info.width, info.height, s.aspect)
+    report("select", 0.52, f"aligned to shot boundaries — {note}")
 
     # 5. render -----------------------------------------------------------
     has_audio = tl.has_audio
@@ -180,7 +184,7 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
         name = f"clip_{n + 1:02d}_{_stamp(c.start)}.mp4"
         dst = s.out_dir / name
         highlight.render_clip(
-            s.video, c, dst, aspect=s.aspect, frame=s.frame,
+            s.video, c, dst, aspect=s.aspect, frame=s.frame, zoom=s.zoom,
             src_size=(info.width, info.height), crf=crf, sharpen=s.sharpen,
             has_audio=has_audio, normalize_audio=s.normalize_audio,
         )
@@ -192,16 +196,8 @@ def _run_highlight(s: Settings, report: Report, check) -> list[ClipResult]:
             tags=_tags(tl, c),
         ))
 
-
     report("done", 1.0, f"{len(out)} clips ready")
     return out
-
-
-_FRAME_NOTE = {
-    "fit": "whole frame, blurred backdrop",
-    "fill": "cropped to the action",
-    "pad": "whole frame on black",
-}
 
 
 def _tags(tl, clip) -> list[str]:

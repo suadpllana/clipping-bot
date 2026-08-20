@@ -356,8 +356,38 @@ def resolve_frame(mode: str, src_w: int, src_h: int, aspect: str) -> str:
     return "fill" if keep >= _FILL_FLOOR else "fit"
 
 
+def _scale_for(src_w: int, src_h: int, ow: int, oh: int, zoom: float) -> float:
+    """Scale factor for the picture, honouring `zoom` but never past a full crop.
+
+    Zooming beyond the point where the picture already covers the canvas buys
+    nothing and only throws frame away, so a source that is already the right
+    shape ignores `zoom` entirely rather than being cropped for no reason.
+    """
+    fit = min(ow / max(src_w, 1), oh / max(src_h, 1))
+    src_ar, out_ar = max(src_w, 1) / max(src_h, 1), ow / oh
+    full = max(src_ar / out_ar, out_ar / src_ar)     # zoom that fills the canvas
+    return fit * min(max(zoom, 1.0), full)
+
+
+def frame_note(mode: str, zoom: float, src_w: int, src_h: int,
+               aspect: str) -> str:
+    """One phrase describing what the viewer will actually see, for progress."""
+    if mode == "fill":
+        return "cropped to the action"
+    ow, oh = ASPECTS.get(aspect, ASPECTS["9:16"])
+    scale = _scale_for(src_w, src_h, ow, oh, zoom)
+    kept = min(1.0, ow / max(src_w * scale, 1e-6))
+    where = "on black" if mode == "pad" else "over a blurred backdrop"
+    if kept > 0.995:
+        return f"whole frame {where}"
+    if kept < 0.4:
+        return "cropped to the action"
+    return f"{kept * 100:.0f}% of the width {where}"
+
+
 def _video_chain(clip: Clip, *, frame: str, src_w: int, src_h: int,
-                 aspect: str, sharpen: bool, fade: float) -> str:
+                 aspect: str, sharpen: bool, fade: float,
+                 zoom: float = 1.0) -> str:
     """The whole -vf graph for one clip."""
     ow, oh = ASPECTS.get(aspect, ASPECTS["9:16"])
     # Rebase timestamps to zero first. A fast seek lands the video on the next
@@ -367,6 +397,14 @@ def _video_chain(clip: Clip, *, frame: str, src_w: int, src_h: int,
     # from the clip start, which the framing expression and the fades rely on.
     head = "setpts=PTS-STARTPTS"
     crisp = "unsharp=5:5:0.5:5:5:0.0" if sharpen else None
+
+    if frame != "fill":
+        # Zoomed far enough that the picture covers the canvas on its own,
+        # which is what `fill` is. Take that path rather than blurring a
+        # backdrop no one will ever see.
+        covers = _scale_for(src_w, src_h, ow, oh, zoom)
+        if src_w * covers >= ow - 1 and src_h * covers >= oh - 1:
+            frame = "fill"
 
     if frame == "fill":
         chain = [
@@ -381,15 +419,24 @@ def _video_chain(clip: Clip, *, frame: str, src_w: int, src_h: int,
             chain.append(crisp)
         graph = ",".join(chain)
     else:
-        scale = min(ow / max(src_w, 1), oh / max(src_h, 1))
-        fw = min(_even(src_w * scale), ow)
-        fh = min(_even(src_h * scale), oh)
-        x, y = _even((ow - fw) / 2), _even((oh - fh) / 2)
+        # `zoom` is a dial between the two extremes rather than a third mode:
+        # 1.0 is the whole frame, and enough of it fills the canvas and becomes
+        # `fill`. In between, the picture is larger and only the outer edges of
+        # the shot are lost — which is the trade most vertical clips actually
+        # want, since the whole frame in a 9:16 canvas is a third of its height.
+        scale = _scale_for(src_w, src_h, ow, oh, zoom)
+        fw, fh = _even(src_w * scale), _even(src_h * scale)
+        # What survives after trimming whatever overflows the canvas.
+        vw, vh = min(fw, ow), min(fh, oh)
         # Overlay offsets have to be even or the chroma planes land half a
         # sample out and the whole picture picks up a colour fringe.
-        x, y = min(x, ow - fw), min(y, oh - fh)
+        x, y = min(_even((ow - vw) / 2), ow - vw), min(_even((oh - vh) / 2), oh - vh)
 
         fg = [f"scale={fw}:{fh}:flags=lanczos"]
+        if (fw, fh) != (vw, vh):
+            # Trimming the sides is a crop, so it may as well be the crop that
+            # follows the action — the same per-shot position `fill` uses.
+            fg.append(f"crop={vw}:{vh}:x='{_crop_x(clip.framing)}':y=(ih-oh)/2")
         if crisp and scale > 1.02:
             fg.append(crisp)
         fg.append("setsar=1")
@@ -428,6 +475,7 @@ def render_clip(
     src: Path, clip: Clip, dst: Path, *,
     aspect: str = "9:16",
     frame: str = "auto",
+    zoom: float = 1.0,
     src_size: tuple[int, int] | None = None,
     crf: int = 19,
     sharpen: bool = True,
@@ -443,7 +491,7 @@ def render_clip(
     mode = resolve_frame(frame, src_w, src_h, aspect)
 
     vf = _video_chain(clip, frame=mode, src_w=src_w, src_h=src_h,
-                      aspect=aspect, sharpen=sharpen, fade=fade)
+                      aspect=aspect, sharpen=sharpen, fade=fade, zoom=zoom)
 
     args = [
         "-accurate_seek", "-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}",
